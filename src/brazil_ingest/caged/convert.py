@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,14 +124,8 @@ def _select_list(columns: list[Column]) -> str:
     parts = []
     for col in columns:
         if col.sql_type.startswith(_DECIMAL_PREFIX):
-            # Decimal comma. A few cells use scientific notation, which DECIMAL cannot parse:
-            # those go through DOUBLE first.
-            text = f"REPLACE(TRIM({col.name}), ',', '.')"
-            expr = (
-                f"CASE WHEN contains(lower({col.name}), 'e') "
-                f"THEN CAST(CAST({text} AS DOUBLE) AS {col.sql_type}) "
-                f"ELSE CAST({text} AS {col.sql_type}) END"
-            )
+            # Decimal comma. DuckDB also reads the few cells in scientific notation (1.00e+12).
+            expr = f"CAST(REPLACE(TRIM({col.name}), ',', '.') AS {col.sql_type})"
         else:
             expr = f"CAST(NULLIF(TRIM({col.name}), '') AS {col.sql_type})"
         parts.append(f"{expr} AS {col.name}")
@@ -144,6 +139,7 @@ def convert(
     filters: Filters | None = None,
     *,
     threads: int | None = None,
+    memory_limit: str | None = None,
 ) -> ConvertResult:
     """Write one typed Parquet file (zstd) and check it against the source text."""
     filters = filters or Filters()
@@ -167,6 +163,8 @@ def convert(
     try:
         if threads:
             con.execute(f"SET threads = {int(threads)}")
+        if memory_limit:
+            con.execute(f"SET memory_limit = '{_check_memory(memory_limit)}'")
         # A view cannot take prepared parameters; every value below is quoted or generated here.
         names_sql = ", ".join(f"'{n}'" for n in names)
         con.execute(
@@ -195,6 +193,16 @@ def convert(
         )
     tmp.replace(out_file)
     return ConvertResult(out_file, source, output, encoding, [c.name for c in columns], scientific)
+
+
+_MEMORY_RE = re.compile(r"^\d+(\.\d+)?\s*(KB|MB|GB|KiB|MiB|GiB)$", re.IGNORECASE)
+
+
+def _check_memory(value: str) -> str:
+    """``"512MB"``. Validated because it goes into SQL as text."""
+    if not _MEMORY_RE.match(value.strip()):
+        raise ValueError(f"memory limit must look like 512MB or 2GB, got {value!r}")
+    return value.strip()
 
 
 def _int_list(values: Sequence[int]) -> str:

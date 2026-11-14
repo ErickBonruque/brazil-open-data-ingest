@@ -82,6 +82,7 @@ def ingest_file(
     filters: Filters | None = None,
     force: bool = False,
     workdir: Path | None = None,
+    memory_limit: str | None = None,
 ) -> PartitionResult:
     """Download, extract, convert and publish one archive. Skips it if already done."""
     filters = filters or Filters()
@@ -102,7 +103,7 @@ def ingest_file(
         tmp_dir = Path(tmp)
         archive = source.fetch(month, name, tmp_dir / "download")
         text = extract_text(archive, tmp_dir / "extract")
-        result = convert(text, kind, tmp_dir / PART, filters)
+        result = convert(text, kind, tmp_dir / PART, filters, memory_limit=memory_limit)
         prefix = partition_prefix(kind, month)
         store.put_file(result.parquet, f"{prefix}/{PART}")
         marker_data = {
@@ -145,6 +146,7 @@ def ingest_months(
     filters: Filters | None = None,
     force: bool = False,
     workdir: Path | None = None,
+    memory_limit: str | None = None,
 ) -> list[PartitionResult]:
     results: list[PartitionResult] = []
     for month in months:
@@ -164,6 +166,7 @@ def ingest_months(
                         filters=filters,
                         force=force,
                         workdir=workdir,
+                        memory_limit=memory_limit,
                     )
                 )
     return results

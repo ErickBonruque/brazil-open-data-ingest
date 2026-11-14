@@ -6,6 +6,7 @@ Configuration comes from the event; environment variables are the defaults:
 * ``lookback`` / ``CAGED_LOOKBACK``: months to look back (default 12).
 * ``state_codes`` / ``CAGED_STATES``: IBGE state codes, comma-separated.
 * ``municipality_codes`` / ``CAGED_MUNICIPALITIES``: IBGE municipality codes, comma-separated.
+* ``memory_limit`` / ``CAGED_MEMORY_LIMIT``: DuckDB memory limit (default 512MB).
 
 Temporary files go to the system temp folder (``/tmp`` on Lambda; size it with ephemeral
 storage of at least 2 GB).
@@ -59,7 +60,8 @@ def run(
     window = backfill_plan(source.list_months(), [], today=today or date.today(), lookback=lookback)
     done = set(done_months(store, source, window))
     todo = [m for m in window if m not in done]
-    results = ingest_months(source, store, todo, filters=filters)
+    memory_limit = str(event.get("memory_limit") or os.environ.get("CAGED_MEMORY_LIMIT") or "512MB")
+    results = ingest_months(source, store, todo, filters=filters, memory_limit=memory_limit)
     written = [r for r in results if r.status == "written"]
     summary = {
         "months": [str(m) for m in todo],

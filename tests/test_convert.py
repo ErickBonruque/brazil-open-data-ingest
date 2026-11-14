@@ -115,3 +115,11 @@ def test_scientific_notation_is_parsed_and_counted(tmp_path: Path) -> None:
             "SELECT max(salary), max(fixed_salary) FROM read_parquet(?)", [str(result.parquet)]
         ).fetchone()
     assert top == (Decimal("1000000000000.00"), Decimal("1000000000000.00"))
+
+
+def test_memory_limit_is_applied_and_validated(tmp_path: Path) -> None:
+    src = write_text(tmp_path / "CAGEDMOV202501.txt", HEADER_MOV, [row(202501, 41, 411990, 1)])
+    ok = convert(src, Kind.MOV, tmp_path / "a.parquet", memory_limit="256MB")
+    assert ok.output == Totals(1, 1)
+    with pytest.raises(ValueError, match="memory limit"):
+        convert(src, Kind.MOV, tmp_path / "b.parquet", memory_limit="1GB'; DROP")

@@ -54,6 +54,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--kinds", type=_kinds, default=frozenset(Kind), help="mov,for,exc")
     p.add_argument("--force", action="store_true", help="rewrite partitions that already exist")
     p.add_argument("--workdir", help="folder for temporary files (default: system temp)")
+    p.add_argument(
+        "--memory-limit", help="DuckDB memory limit, e.g. 512MB (lower peak, a bit slower)"
+    )
 
 
 def _print_results(results: list[PartitionResult]) -> None:
@@ -143,6 +146,7 @@ def _run(args: argparse.Namespace) -> int:
         filters=filters,
         force=args.force,
         workdir=workdir,
+        memory_limit=args.memory_limit,
     )
     _print_results(results)
     return 0
