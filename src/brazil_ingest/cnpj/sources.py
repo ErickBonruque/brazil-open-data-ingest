@@ -8,13 +8,14 @@ without a login through WebDAV: ``PROPFIND`` lists folders and files (with sizes
 from __future__ import annotations
 
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from defusedxml import ElementTree
 
@@ -41,11 +42,19 @@ class Source(Protocol):
 
 
 def _is_cnpj_zip(name: str) -> bool:
+    if not name.lower().endswith(".zip"):
+        return False
     try:
         parse_zip_name(name)
     except LayoutError:
+        log.warning("ignoring unknown ZIP on the source: %s", name)
         return False
     return True
+
+
+def redact(text: str) -> str:
+    """Remove ``user:password@`` from any URL in a log line."""
+    return re.sub(r"(https?://)[^/@\s]+@", r"\1", text)
 
 
 class LocalSource:
@@ -93,6 +102,9 @@ class WebDavSource:
         opener: Opener | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        parts = urlsplit(share_url)
+        if parts.scheme != "https":
+            raise ValueError(f"the share URL must use https: {redact(share_url)}")
         self.share_url = share_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
@@ -116,7 +128,7 @@ class WebDavSource:
             if attempt == self.retries:
                 raise error
             wait = self.backoff * 2 ** (attempt - 1)
-            log.warning("%s failed (%s); retry %d in %.0fs", what, error, attempt, wait)
+            log.warning("%s failed (%s); retry %d in %.0fs", redact(what), error, attempt, wait)
             self._sleep(wait)
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -124,7 +136,7 @@ class WebDavSource:
         """(name, size, is_folder) of the children of a folder."""
 
         def run() -> bytes:
-            req = urllib.request.Request(  # noqa: S310 - https URL set by the caller
+            req = urllib.request.Request(  # noqa: S310 - https checked in __init__
                 url + "/",
                 data=_PROPFIND_BODY,
                 method="PROPFIND",
@@ -162,9 +174,9 @@ class WebDavSource:
                 return {}
             raise
         return {
-            name: size if size is not None else -1
+            name: size
             for name, size, is_folder in entries
-            if not is_folder and _is_cnpj_zip(name)
+            if not is_folder and size is not None and _is_cnpj_zip(name)
         }
 
     def fetch(self, release: Month, name: str, dest_dir: Path) -> Path:
@@ -179,17 +191,22 @@ class WebDavSource:
         def run() -> Path:
             offset = part.stat().st_size if part.exists() else 0
             if offset > expected:
-                part.unlink()
+                part.unlink(missing_ok=True)
                 offset = 0
             headers = {"User-Agent": USER_AGENT}
             if offset:
                 headers["Range"] = f"bytes={offset}-"
-            req = urllib.request.Request(url, headers=headers)  # noqa: S310
+            req = urllib.request.Request(url, headers=headers)  # noqa: S310 - https checked
             with self._open(req, self.timeout) as resp:
                 if offset and resp.status != 206:  # server ignored Range: start again
-                    part.unlink()
+                    part.unlink(missing_ok=True)
+                    offset = 0
                 with part.open("ab") as fh:
+                    size = offset
                     while block := resp.read(1 << 20):
+                        size += len(block)
+                        if size > expected:  # never write past the advertised size
+                            raise OSError(f"{name}: server sent more than {expected} bytes")
                         fh.write(block)
             got = part.stat().st_size
             if got != expected:
@@ -197,5 +214,5 @@ class WebDavSource:
             part.replace(final)
             return final
 
-        log.info("download %s", url)
+        log.info("download %s", redact(url))
         return self._retry(f"download {name}", run)

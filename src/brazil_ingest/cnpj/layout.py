@@ -47,7 +47,7 @@ _ZIP_NAMES = {
     "paises": Table.COUNTRIES,
     "qualificacoes": Table.QUALIFICATIONS,
 }
-_ZIP_RE = re.compile(r"^([A-Za-z]+?)(\d?)\.zip$")
+_ZIP_RE = re.compile(r"^([A-Za-z]+?)(\d*)\.zip$")
 
 # Legal nature 2135 is "Empresário (Individual)", which includes the MEI micro-entrepreneurs.
 # Their company name is the owner's own name (sometimes followed by the CPF number).

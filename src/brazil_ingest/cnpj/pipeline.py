@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from brazil_ingest.cnpj.convert import convert, extract_member
-from brazil_ingest.cnpj.layout import Table, parse_zip_name
+from brazil_ingest.cnpj.layout import LayoutError, Table, parse_zip_name
 from brazil_ingest.cnpj.sources import Source
 from brazil_ingest.months import Month
 from brazil_ingest.partitions import FilterMismatchError, publish, read_marker, sha256_file
@@ -118,6 +118,12 @@ def ingest_release(
     if not files:
         raise FileNotFoundError(f"release {release} not found on the source")
     # Small files first: a broken run still leaves the lookup tables done.
+    seen: dict[tuple[Table, int], str] = {}
+    for name in files:
+        key = parse_zip_name(name)
+        if key in seen:
+            raise LayoutError(f"{seen[key]} and {name} map to the same partition")
+        seen[key] = name
     names = sorted((n for n in files if parse_zip_name(n)[0] in wanted), key=lambda n: files[n])
     return [
         ingest_file(

@@ -224,3 +224,27 @@ def test_marker_records_source_hash(release_dir: Path, tmp_path: Path) -> None:
     marker_path = tmp_path / "lake" / partition_prefix(Table.CNAES, Month(2026, 10), 0)
     marker = json.loads((marker_path / "_SUCCESS.json").read_text())
     assert len(marker["source_sha256"]) == 64 and marker["encoding"] == "latin-1"
+
+
+def test_webdav_requires_https_and_redacts() -> None:
+    from brazil_ingest.cnpj.sources import redact
+
+    with pytest.raises(ValueError, match="https"):
+        WebDavSource("http://example.org/dav")
+    assert redact("list https://user:secret@example.org/x") == "list https://example.org/x"
+
+
+def test_webdav_stops_at_the_advertised_size(tmp_path: Path) -> None:
+    server = FakeServer()
+    server.payload = bytes(range(120))  # 20 bytes more than PROPFIND says
+    src, _ = _source(server)
+    with pytest.raises(OSError, match="more than 100"):
+        src.fetch(Month(2026, 10), "Empresas1.zip", tmp_path)
+
+
+def test_duplicate_partition_is_an_error(release_dir: Path, tmp_path: Path) -> None:
+    from brazil_ingest.cnpj.layout import LayoutError
+
+    (release_dir / "2026-10" / "Empresas01.zip").write_bytes(b"")  # chunk 1 again
+    with pytest.raises(LayoutError, match="same partition"):
+        ingest_release(LocalSource(release_dir), LocalStore(tmp_path), Month(2026, 10))
