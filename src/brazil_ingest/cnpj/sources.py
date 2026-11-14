@@ -138,6 +138,7 @@ class WebDavSource:
         self.backoff = backoff
         self._open = opener or _https_open
         self._sleep = sleep
+        self._listing: dict[Month, dict[str, int]] = {}
 
     def _url(self, *parts: str) -> str:
         return "/".join([self.share_url, *(quote(p) for p in parts)])
@@ -199,6 +200,12 @@ class WebDavSource:
         return sorted(releases)
 
     def list_files(self, release: Month) -> dict[str, int]:
+        """Files of a release with their sizes. Cached: one listing per release per run."""
+        if release not in self._listing:
+            self._listing[release] = self._list_files(release)
+        return dict(self._listing[release])
+
+    def _list_files(self, release: Month) -> dict[str, int]:
         try:
             entries = self._propfind(self._url(str(release)))
         except urllib.error.HTTPError as exc:
