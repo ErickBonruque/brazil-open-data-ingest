@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import codecs
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import duckdb
 
 from brazil_ingest.caged.layout import (
     COLUMNS,
@@ -18,6 +15,7 @@ from brazil_ingest.caged.layout import (
     output_columns,
     resolve_header,
 )
+from brazil_ingest.partitions import duck_connect
 
 _DECIMAL_PREFIX = "DECIMAL"
 _DECIMAL_NAMES = frozenset(c.name for c in COLUMNS if c.sql_type.startswith(_DECIMAL_PREFIX))
@@ -159,12 +157,8 @@ def convert(
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_file.with_suffix(".parquet.tmp")
-    con = duckdb.connect()
+    con = duck_connect(threads=threads, memory_limit=memory_limit)
     try:
-        if threads:
-            con.execute(f"SET threads = {int(threads)}")
-        if memory_limit:
-            con.execute(f"SET memory_limit = '{_check_memory(memory_limit)}'")
         # A view cannot take prepared parameters; every value below is quoted or generated here.
         names_sql = ", ".join(f"'{n}'" for n in names)
         con.execute(
@@ -193,16 +187,6 @@ def convert(
         )
     tmp.replace(out_file)
     return ConvertResult(out_file, source, output, encoding, [c.name for c in columns], scientific)
-
-
-_MEMORY_RE = re.compile(r"^\d+(\.\d+)?\s*(KB|MB|GB|KiB|MiB|GiB)$", re.IGNORECASE)
-
-
-def _check_memory(value: str) -> str:
-    """``"512MB"``. Validated because it goes into SQL as text."""
-    if not _MEMORY_RE.match(value.strip()):
-        raise ValueError(f"memory limit must look like 512MB or 2GB, got {value!r}")
-    return value.strip()
 
 
 def _int_list(values: Sequence[int]) -> str:

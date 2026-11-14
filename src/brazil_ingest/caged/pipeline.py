@@ -14,33 +14,27 @@ skipped on the next run, so the pipeline can run on a schedule and be stopped at
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from brazil_ingest import __version__
 from brazil_ingest.caged.convert import Filters, convert
 from brazil_ingest.caged.extract import extract_text
 from brazil_ingest.caged.layout import Kind, parse_file_name
 from brazil_ingest.caged.sources import Source
 from brazil_ingest.months import Month
+from brazil_ingest.partitions import PART, FilterMismatchError, publish, sha256_file
+from brazil_ingest.partitions import read_marker as read_marker_at
 from brazil_ingest.storage import Store
+
+__all__ = ["DATASET", "FilterMismatchError", "PartitionResult", "ingest_months", "read_marker"]
 
 log = logging.getLogger(__name__)
 
 DATASET = "caged"
-MARKER = "_SUCCESS.json"
-PART = "part-0.parquet"
-
-
-class FilterMismatchError(RuntimeError):
-    """A partition already exists with other filters. Mixing them would corrupt the dataset."""
 
 
 @dataclass(frozen=True)
@@ -58,19 +52,7 @@ def partition_prefix(kind: Kind, month: Month) -> str:
 
 
 def read_marker(store: Store, kind: Kind, month: Month) -> dict[str, Any] | None:
-    key = f"{partition_prefix(kind, month)}/{MARKER}"
-    if not store.exists(key):
-        return None
-    data: dict[str, Any] = json.loads(store.read_bytes(key))
-    return data
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return read_marker_at(store, partition_prefix(kind, month))
 
 
 def ingest_file(
@@ -104,25 +86,25 @@ def ingest_file(
         archive = source.fetch(month, name, tmp_dir / "download")
         text = extract_text(archive, tmp_dir / "extract")
         result = convert(text, kind, tmp_dir / PART, filters, memory_limit=memory_limit)
-        prefix = partition_prefix(kind, month)
-        store.put_file(result.parquet, f"{prefix}/{PART}")
-        marker_data = {
-            "dataset": DATASET,
-            "kind": kind.value,
-            "release_month": str(month),
-            "source_file": name,
-            "source_bytes": archive.stat().st_size,
-            "source_sha256": _sha256(archive),
-            "encoding": result.encoding,
-            "filters": filters.as_dict(),
-            "rows": result.output.rows,
-            "balance": result.output.balance,
-            "scientific_notation_values": result.scientific_values,
-            "columns": result.columns,
-            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "tool_version": __version__,
-        }
-        store.put_bytes(json.dumps(marker_data, indent=2).encode(), f"{prefix}/{MARKER}")
+        publish(
+            store,
+            partition_prefix(kind, month),
+            result.parquet,
+            {
+                "dataset": DATASET,
+                "kind": kind.value,
+                "release_month": str(month),
+                "source_file": name,
+                "source_bytes": archive.stat().st_size,
+                "source_sha256": sha256_file(archive),
+                "encoding": result.encoding,
+                "filters": filters.as_dict(),
+                "rows": result.output.rows,
+                "balance": result.output.balance,
+                "scientific_notation_values": result.scientific_values,
+                "columns": result.columns,
+            },
+        )
     seconds = time.perf_counter() - started
     log.info(
         "%s %s: %d rows, balance %+d (%.1fs)",
