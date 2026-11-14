@@ -153,7 +153,10 @@ def parse_zip_name(name: str) -> tuple[Table, int]:
     match = _ZIP_RE.match(name)
     if not match or match.group(1).lower() not in _ZIP_NAMES:
         raise LayoutError(f"not a CNPJ open data file name: {name!r}")
-    return _ZIP_NAMES[match.group(1).lower()], int(match.group(2) or 0)
+    digits = match.group(2)
+    if digits and digits != str(int(digits)):  # "Empresas01.zip" would collide with "Empresas1"
+        raise LayoutError(f"part number with a leading zero: {name!r}")
+    return _ZIP_NAMES[match.group(1).lower()], int(digits or 0)
 
 
 def output_columns(table: Table, *, keep_personal: bool) -> list[Column]:

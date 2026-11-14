@@ -10,7 +10,7 @@ import duckdb
 import pytest
 
 from brazil_ingest import cli
-from brazil_ingest.cnpj.layout import Table
+from brazil_ingest.cnpj.layout import LayoutError, Table, parse_zip_name
 from brazil_ingest.cnpj.pipeline import ingest_release, partition_prefix
 from brazil_ingest.cnpj.sources import LocalSource, WebDavSource
 from brazil_ingest.months import Month
@@ -232,6 +232,9 @@ def test_webdav_requires_https_and_redacts() -> None:
     with pytest.raises(ValueError, match="https"):
         WebDavSource("http://example.org/dav")
     assert redact("list https://user:secret@example.org/x") == "list https://example.org/x"
+    assert redact("HTTPS://u:p@ss@example.org") == "HTTPS://example.org"
+    with pytest.raises(LayoutError, match="leading zero"):
+        parse_zip_name("Empresas01.zip")
 
 
 def test_webdav_stops_at_the_advertised_size(tmp_path: Path) -> None:
@@ -243,8 +246,20 @@ def test_webdav_stops_at_the_advertised_size(tmp_path: Path) -> None:
 
 
 def test_duplicate_partition_is_an_error(release_dir: Path, tmp_path: Path) -> None:
-    from brazil_ingest.cnpj.layout import LayoutError
-
-    (release_dir / "2026-10" / "Empresas01.zip").write_bytes(b"")  # chunk 1 again
+    (release_dir / "2026-10" / "Empresas.zip").write_bytes(b"")  # chunk 0 again
     with pytest.raises(LayoutError, match="same partition"):
         ingest_release(LocalSource(release_dir), LocalStore(tmp_path), Month(2026, 10))
+
+
+def test_redirect_to_http_is_refused() -> None:
+    import email.message
+
+    from brazil_ingest.cnpj.sources import _HttpsOnlyRedirects
+
+    handler = _HttpsOnlyRedirects()
+    req = urllib.request.Request("https://example.org/a")
+    headers = email.message.Message()
+    with pytest.raises(urllib.error.HTTPError, match="non-https"):
+        handler.redirect_request(req, None, 302, "Found", headers, "http://example.org/b")
+    ok = handler.redirect_request(req, None, 302, "Found", headers, "https://example.org/b")
+    assert ok is not None and ok.full_url == "https://example.org/b"

@@ -47,14 +47,41 @@ def _is_cnpj_zip(name: str) -> bool:
     try:
         parse_zip_name(name)
     except LayoutError:
-        log.warning("ignoring unknown ZIP on the source: %s", name)
+        log.warning("ignoring unknown ZIP on the source: %r", name[:128])
         return False
     return True
 
 
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
 def redact(text: str) -> str:
-    """Remove ``user:password@`` from any URL in a log line."""
-    return re.sub(r"(https?://)[^/@\s]+@", r"\1", text)
+    """Remove ``user:password@`` from every URL in a log line (any scheme, last ``@`` wins)."""
+    return re.sub(r"([a-z][a-z0-9+.-]*://)[^/\s]*@", r"\1", text, flags=re.IGNORECASE)
+
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https URLs, so a redirect cannot downgrade the connection."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if urlsplit(newurl).scheme != "https":
+            raise urllib.error.HTTPError(newurl, code, "redirect to non-https URL", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_HTTPS_OPENER = urllib.request.build_opener(_HttpsOnlyRedirects())
+
+
+def _https_open(req: urllib.request.Request, timeout: float) -> Any:
+    return _HTTPS_OPENER.open(req, timeout=timeout)
 
 
 class LocalSource:
@@ -104,12 +131,12 @@ class WebDavSource:
     ) -> None:
         parts = urlsplit(share_url)
         if parts.scheme != "https":
-            raise ValueError(f"the share URL must use https: {redact(share_url)}")
+            raise ValueError("the share URL must use https")
         self.share_url = share_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
-        self._open = opener or (lambda req, timeout: urllib.request.urlopen(req, timeout=timeout))  # noqa: S310
+        self._open = opener or _https_open
         self._sleep = sleep
 
     def _url(self, *parts: str) -> str:
@@ -128,7 +155,9 @@ class WebDavSource:
             if attempt == self.retries:
                 raise error
             wait = self.backoff * 2 ** (attempt - 1)
-            log.warning("%s failed (%s); retry %d in %.0fs", redact(what), error, attempt, wait)
+            log.warning(
+                "%s failed (%s); retry %d in %.0fs", redact(what), redact(str(error)), attempt, wait
+            )
             self._sleep(wait)
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -151,6 +180,9 @@ class WebDavSource:
         for response in root.iter(f"{_DAV}response"):
             href = unquote(response.findtext(f"{_DAV}href") or "").rstrip("/")
             name = href.rsplit("/", 1)[-1]
+            if name and not _SAFE_NAME.match(name):
+                log.warning("ignoring entry with an unexpected name: %r", name[:128])
+                continue
             size_text = response.findtext(f".//{_DAV}getcontentlength")
             is_folder = response.find(f".//{_DAV}collection") is not None
             out.append((name, int(size_text) if size_text else None, is_folder))
