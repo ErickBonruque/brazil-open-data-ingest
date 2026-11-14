@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import shutil
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
@@ -22,6 +21,10 @@ from brazil_ingest.partitions import duck_connect, sql_str
 from brazil_ingest.text import detect_encoding
 
 _EMPTY_DATES = ("", "0", "00000000")
+# Guards against a corrupt or hostile archive. Real files: up to about 10 GB of text, and text
+# compresses about 4 to 10 times.
+MAX_UNCOMPRESSED = 40 * 1024**3
+MAX_RATIO = 100
 
 
 class CheckError(RuntimeError):
@@ -49,7 +52,7 @@ class ConvertResult:
     alphanumeric_cnpj: int
 
 
-def extract_member(archive: Path, dest_dir: Path) -> Path:
+def extract_member(archive: Path, dest_dir: Path, *, max_bytes: int = MAX_UNCOMPRESSED) -> Path:
     """Extract the only file inside a CNPJ ZIP and return its path."""
     with zipfile.ZipFile(archive) as zf:
         members = [m for m in zf.infolist() if not m.is_dir()]
@@ -57,10 +60,21 @@ def extract_member(archive: Path, dest_dir: Path) -> Path:
             raise LayoutError(f"{archive.name}: expected 1 file, found {len(members)}")
         member = members[0]
         name = Path(member.filename).name  # never trust paths inside the archive
+        limit = min(max_bytes, max(member.compress_size, 1) * MAX_RATIO)
+        if member.file_size > limit:
+            raise LayoutError(f"{archive.name}: {member.file_size} bytes uncompressed is too big")
         dest_dir.mkdir(parents=True, exist_ok=True)
         out = dest_dir / (name or "data.csv")
+        written = 0
         with zf.open(member) as src, out.open("wb") as dst:
-            shutil.copyfileobj(src, dst, 1 << 20)
+            # The size in the ZIP header can lie: count the real bytes too.
+            while block := src.read(1 << 20):
+                written += len(block)
+                if written > limit:
+                    dst.close()
+                    out.unlink()
+                    raise LayoutError(f"{archive.name}: more data than the header says")
+                dst.write(block)
     return out
 
 
@@ -107,8 +121,10 @@ def _expr(col: Column, table: Table, keep_personal: bool) -> str:
     else:
         expr = f"CAST({raw} AS {col.sql_type})"
     if table is Table.COMPANIES and col.name == "company_name" and not keep_personal:
+        # Fail closed: a missing or unreadable legal nature also hides the name.
+        nature = "TRY_CAST(NULLIF(TRIM(legal_nature), '') AS SMALLINT)"
         expr = (
-            f"CASE WHEN CAST(NULLIF(TRIM(legal_nature), '') AS SMALLINT) = "
+            f"CASE WHEN COALESCE({nature}, {INDIVIDUAL_ENTREPRENEUR}) = "
             f"{INDIVIDUAL_ENTREPRENEUR} THEN NULL ELSE {expr} END"
         )
     return f"{expr} AS {col.name}"

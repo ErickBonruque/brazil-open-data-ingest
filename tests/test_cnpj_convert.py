@@ -89,13 +89,15 @@ def test_companies_types_and_individual_names(tmp_path: Path) -> None:
         [
             line("00000001", "ACME INDÚSTRIA LTDA", "2062", "49", "150000,50", "05", ""),
             line("00000002", "JOAO DA SILVA 12345678900", "2135", "50", "1000,00", "01", ""),
+            line("00000003", "NATUREZA EM BRANCO", "", "50", "1,00", "01", ""),
         ],
     )
     result = convert(src, Table.COMPANIES, tmp_path / "out.parquet")
-    assert result.rows == 2 and result.encoding == "latin-1"
+    assert result.rows == 3 and result.encoding == "latin-1"
     assert query(result.parquet, "SELECT * FROM {t} ORDER BY cnpj_base") == [
         ("00000001", "ACME INDÚSTRIA LTDA", 2062, 49, Decimal("150000.50"), 5, None),
         ("00000002", None, 2135, 50, Decimal("1000.00"), 1, None),
+        ("00000003", None, None, 50, Decimal("1.00"), 1, None),  # fails closed
     ]
     kept = convert(src, Table.COMPANIES, tmp_path / "kept.parquet", keep_personal=True)
     names = query(kept.parquet, "SELECT company_name FROM {t} ORDER BY cnpj_base")
@@ -161,3 +163,13 @@ def test_extract_member_ignores_paths_inside_the_zip(tmp_path: Path) -> None:
         zf.writestr("b", "2")
     with pytest.raises(LayoutError, match="expected 1"):
         extract_member(archive, tmp_path / "y")
+
+
+def test_extract_member_refuses_a_bomb(tmp_path: Path) -> None:
+    archive = tmp_path / "Empresas0.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("big", b"0" * 1_000_000)  # compresses about 1000 times
+    with pytest.raises(LayoutError, match="too big"):
+        extract_member(archive, tmp_path / "x")
+    with pytest.raises(LayoutError, match="too big"):
+        extract_member(archive, tmp_path / "y", max_bytes=10)

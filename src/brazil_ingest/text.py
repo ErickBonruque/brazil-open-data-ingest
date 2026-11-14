@@ -16,6 +16,9 @@ def detect_encoding(path: Path, *, block: int = 1 << 20, window: int = 1 << 16) 
     megabytes (codes and numbers) and have its first accented name much later. ASCII is valid
     UTF-8, so a fixed-size probe would choose UTF-8 for a Latin-1 file. A file with no
     non-ASCII byte at all is read as UTF-8 (both encodings give the same text).
+
+    If a later part of a "UTF-8" file is not UTF-8, nothing is corrupted silently: the readers
+    decode strictly and stop with an error.
     """
     with path.open("rb") as fh:
         while chunk := fh.read(block):
