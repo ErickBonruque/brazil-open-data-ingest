@@ -10,9 +10,9 @@ from brazil_ingest.caged.convert import (
     Filters,
     Totals,
     convert,
-    detect_encoding,
 )
 from brazil_ingest.caged.layout import Kind, LayoutError
+from brazil_ingest.text import detect_encoding
 from tests.conftest import HEADER_EXC, HEADER_MOV, row, write_text
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import codecs
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +15,7 @@ from brazil_ingest.caged.layout import (
     resolve_header,
 )
 from brazil_ingest.partitions import duck_connect
+from brazil_ingest.text import detect_encoding
 
 _DECIMAL_PREFIX = "DECIMAL"
 _DECIMAL_NAMES = frozenset(c.name for c in COLUMNS if c.sql_type.startswith(_DECIMAL_PREFIX))
@@ -58,21 +58,6 @@ class ConvertResult:
     encoding: str
     columns: list[str] = field(default_factory=list)
     scientific_values: int = 0
-
-
-def detect_encoding(path: Path, probe_bytes: int = 1 << 20) -> str:
-    """``"utf-8"`` if the first MB decodes as UTF-8, else ``"latin-1"``.
-
-    The published files are UTF-8 today. The check keeps the reader correct if an edition
-    comes in Latin-1, which is common in older Brazilian government data.
-    """
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    with path.open("rb") as fh:
-        try:
-            decoder.decode(fh.read(probe_bytes), final=False)
-        except UnicodeDecodeError:
-            return "latin-1"
-    return "utf-8"
 
 
 def read_header(path: Path, encoding: str) -> list[str]:
