@@ -1,12 +1,12 @@
 [project]
 name = "brazil-open-data-ingest"
 version = "0.1.0"
-description = "Idempotent ingestion of Brazilian government open data (Novo CAGED) into partitioned Parquet."
+description = "Idempotent ingestion of Brazilian government open data (Novo CAGED, CNPJ) into partitioned Parquet."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Erick Bonruque" }]
-keywords = ["caged", "brazil", "open-data", "ftp", "parquet", "duckdb", "etl", "data-engineering"]
+keywords = ["caged", "cnpj", "brazil", "open-data", "ftp", "parquet", "duckdb", "etl", "data-engineering"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
