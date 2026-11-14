@@ -32,6 +32,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "matplotlib>=3.8",
 ]
 
 [build-system]
@@ -55,10 +56,10 @@ ignore = ["S608"]  # SQL is built from validated identifiers only (see caged/con
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
-module = ["py7zr.*", "boto3.*", "botocore.*"]
+module = ["py7zr.*", "boto3.*", "botocore.*", "matplotlib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
