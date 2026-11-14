@@ -116,6 +116,7 @@ def ingest_file(
             "filters": filters.as_dict(),
             "rows": result.output.rows,
             "balance": result.output.balance,
+            "scientific_notation_values": result.scientific_values,
             "columns": result.columns,
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "tool_version": __version__,

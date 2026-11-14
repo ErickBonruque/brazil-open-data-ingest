@@ -82,7 +82,7 @@ def test_conservation_error_leaves_no_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src = write_text(tmp_path / "CAGEDMOV202501.txt", HEADER_MOV, [row(202501, 41, 411990, 1)])
-    monkeypatch.setattr(convert_module, "source_totals", lambda *a, **k: Totals(2, 2))
+    monkeypatch.setattr(convert_module, "source_totals", lambda *a, **k: (Totals(2, 2), 0))
     out = tmp_path / "out.parquet"
     with pytest.raises(ConservationError, match="2 rows"):
         convert(src, Kind.MOV, out)
@@ -103,3 +103,15 @@ def test_bad_number_fails_loudly(tmp_path: Path) -> None:
     src = write_text(tmp_path / "CAGEDMOV202501.txt", HEADER_MOV, [line])
     with pytest.raises(duckdb.ConversionException):
         convert(src, Kind.MOV, tmp_path / "out.parquet")
+
+
+def test_scientific_notation_is_parsed_and_counted(tmp_path: Path) -> None:
+    line = row(202502, 52, 520450, 1, "1,00e+12")
+    src = write_text(tmp_path / "CAGEDMOV202502.txt", HEADER_MOV, [line, row(202502, 41, 1, 1)])
+    result = convert(src, Kind.MOV, tmp_path / "out.parquet")
+    assert result.scientific_values == 2  # salary and fixed salary of the first line
+    with duckdb.connect() as con:
+        top = con.execute(
+            "SELECT max(salary), max(fixed_salary) FROM read_parquet(?)", [str(result.parquet)]
+        ).fetchone()
+    assert top == (Decimal("1000000000000.00"), Decimal("1000000000000.00"))

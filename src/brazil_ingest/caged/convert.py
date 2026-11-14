@@ -9,9 +9,17 @@ from pathlib import Path
 
 import duckdb
 
-from brazil_ingest.caged.layout import Column, Kind, LayoutError, output_columns, resolve_header
+from brazil_ingest.caged.layout import (
+    COLUMNS,
+    Column,
+    Kind,
+    LayoutError,
+    output_columns,
+    resolve_header,
+)
 
 _DECIMAL_PREFIX = "DECIMAL"
+_DECIMAL_NAMES = frozenset(c.name for c in COLUMNS if c.sql_type.startswith(_DECIMAL_PREFIX))
 
 
 class ConservationError(RuntimeError):
@@ -50,6 +58,7 @@ class ConvertResult:
     output: Totals
     encoding: str
     columns: list[str] = field(default_factory=list)
+    scientific_values: int = 0
 
 
 def detect_encoding(path: Path, probe_bytes: int = 1 << 20) -> str:
@@ -76,18 +85,24 @@ def read_header(path: Path, encoding: str) -> list[str]:
     return header.split(";")
 
 
-def source_totals(path: Path, names: Sequence[str], filters: Filters, encoding: str) -> Totals:
+def source_totals(
+    path: Path, names: Sequence[str], filters: Filters, encoding: str
+) -> tuple[Totals, int]:
     """Count rows and sum the balance with plain Python, independent of DuckDB.
 
-    ``names`` are the output names of the header cells, in file order.
+    ``names`` are the output names of the header cells, in file order. The second value is
+    the number of decimal cells written in scientific notation (``1,00e+12``): the source
+    has a few of them, always absurd salaries, and they are worth a look.
     """
     names = list(names)
     i_balance = names.index("balance")
     i_state = names.index("state_code")
     i_city = names.index("municipality_code")
+    i_decimals = [i for i, n in enumerate(names) if n in _DECIMAL_NAMES]
     width = len(names)
     rows = 0
     balance = 0
+    scientific = 0
     with path.open(encoding=encoding, newline="") as fh:
         next(fh)
         for lineno, line in enumerate(fh, start=2):
@@ -100,14 +115,22 @@ def source_totals(path: Path, names: Sequence[str], filters: Filters, encoding: 
             if filters.keeps(int(cells[i_state]), int(cells[i_city])):
                 rows += 1
                 balance += int(cells[i_balance])
-    return Totals(rows, balance)
+                scientific += sum(1 for i in i_decimals if "e" in cells[i].lower())
+    return Totals(rows, balance), scientific
 
 
 def _select_list(columns: list[Column]) -> str:
     parts = []
     for col in columns:
         if col.sql_type.startswith(_DECIMAL_PREFIX):
-            expr = f"CAST(REPLACE(TRIM({col.name}), ',', '.') AS {col.sql_type})"
+            # Decimal comma. A few cells use scientific notation, which DECIMAL cannot parse:
+            # those go through DOUBLE first.
+            text = f"REPLACE(TRIM({col.name}), ',', '.')"
+            expr = (
+                f"CASE WHEN contains(lower({col.name}), 'e') "
+                f"THEN CAST(CAST({text} AS DOUBLE) AS {col.sql_type}) "
+                f"ELSE CAST({text} AS {col.sql_type}) END"
+            )
         else:
             expr = f"CAST(NULLIF(TRIM({col.name}), '') AS {col.sql_type})"
         parts.append(f"{expr} AS {col.name}")
@@ -163,7 +186,7 @@ def convert(
     if row is None:  # pragma: no cover - COUNT(*) always returns a row
         raise RuntimeError("empty result from DuckDB")
     output = Totals(int(row[0]), int(row[1]))
-    source = source_totals(text_file, names, filters, encoding)
+    source, scientific = source_totals(text_file, names, filters, encoding)
     if output != source:
         tmp.unlink(missing_ok=True)
         raise ConservationError(
@@ -171,7 +194,7 @@ def convert(
             f"Parquet has {output.rows} rows / balance {output.balance}"
         )
     tmp.replace(out_file)
-    return ConvertResult(out_file, source, output, encoding, [c.name for c in columns])
+    return ConvertResult(out_file, source, output, encoding, [c.name for c in columns], scientific)
 
 
 def _int_list(values: Sequence[int]) -> str:

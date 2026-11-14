@@ -59,7 +59,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("disability_type", "TINYINT", "tipodedeficiencia", "Disability type code"),
     Column("intermittent", "TINYINT", "indtrabintermitente", "Intermittent work flag"),
     Column("part_time", "TINYINT", "indtrabparcial", "Part-time work flag"),
-    Column("salary", "DECIMAL(14,2)", "salario", "Monthly salary (BRL)"),
+    Column("salary", "DECIMAL(18,2)", "salario", "Monthly salary (BRL)"),
     Column("establishment_size", "TINYINT", "tamestabjan", "Establishment size band in January"),
     Column("apprentice", "TINYINT", "indicadoraprendiz", "Apprentice flag"),
     Column("information_source", "TINYINT", "origemdainformacao", "Source system code"),
@@ -68,7 +68,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("exclusion_flag", "TINYINT", "indicadordeexclusao", "Exclusion flag"),
     Column("late_flag", "TINYINT", "indicadordeforadoprazo", "Declared late flag"),
     Column("salary_unit", "TINYINT", "unidadesalariocodigo", "Unit of the fixed salary"),
-    Column("fixed_salary", "DECIMAL(14,2)", "valorsalariofixo", "Fixed salary value (BRL)"),
+    Column("fixed_salary", "DECIMAL(18,2)", "valorsalariofixo", "Fixed salary value (BRL)"),
 )
 
 EXC_ONLY = frozenset({"competenciaexc", "indicadordeexclusao"})
