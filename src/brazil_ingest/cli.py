@@ -1,4 +1,4 @@
-"""Command line: ``brazil-ingest caged {months,ingest,backfill,net-jobs}``."""
+"""Command line: ``brazil-ingest caged ...`` and ``brazil-ingest cnpj ...``."""
 
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ from brazil_ingest.caged.pipeline import (
     ingest_months,
 )
 from brazil_ingest.caged.sources import FtpSource, LocalSource, Source
-from brazil_ingest.months import backfill_plan, parse_range
+from brazil_ingest.cnpj import sources as cnpj_sources
+from brazil_ingest.cnpj.layout import Table
+from brazil_ingest.cnpj.pipeline import FileResult, ingest_release
+from brazil_ingest.months import Month, backfill_plan, parse_range
 from brazil_ingest.storage import open_store
 
 
@@ -35,6 +38,20 @@ def _kinds(text: str) -> frozenset[Kind]:
         return frozenset(Kind(x.strip().lower()) for x in text.split(","))
     except ValueError as exc:
         raise argparse.ArgumentTypeError("kinds are mov, for, exc") from exc
+
+
+def _tables(text: str) -> tuple[Table, ...]:
+    try:
+        return tuple(Table(x.strip().lower()) for x in text.split(","))
+    except ValueError as exc:
+        names = ", ".join(t.value for t in Table)
+        raise argparse.ArgumentTypeError(f"tables are: {names}") from exc
+
+
+def _cnpj_source(args: argparse.Namespace) -> cnpj_sources.Source:
+    if args.source_dir:
+        return cnpj_sources.LocalSource(Path(args.source_dir))
+    return cnpj_sources.WebDavSource(args.share_url)
 
 
 def _source(args: argparse.Namespace) -> Source:
@@ -94,6 +111,28 @@ def build_parser() -> argparse.ArgumentParser:
         default="reference_month",
         help="comma-separated: reference_month,state_code,region,cnae_section",
     )
+
+    cnpj = datasets.add_parser("cnpj", help="CNPJ open data (company registry)")
+    sub = cnpj.add_subparsers(dest="command", required=True)
+    for name, help_text in (
+        ("releases", "list the releases on the source"),
+        ("ingest", "ingest one release (YYYY-MM or 'latest')"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--source-dir", help="read ZIPs from <dir>/<YYYY-MM>/ instead of the server")
+        p.add_argument("--share-url", default=cnpj_sources.SHARE_URL, help="WebDAV share URL")
+    p.add_argument("release", help="YYYY-MM or latest")
+    p.add_argument("--dest", required=True, help="output folder or s3://bucket/prefix")
+    p.add_argument("--endpoint-url", help="S3-compatible endpoint (MinIO)")
+    p.add_argument("--tables", type=_tables, default=tuple(Table), help="default: all tables")
+    p.add_argument(
+        "--keep-personal",
+        action="store_true",
+        help="keep addresses, contacts, partner names and documents (dropped by default)",
+    )
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--workdir")
+    p.add_argument("--memory-limit")
     return parser
 
 
@@ -111,6 +150,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.dataset == "cnpj":
+        return _run_cnpj(args)
     if args.command == "months":
         for month in _source(args).list_months():
             print(month)
@@ -149,6 +190,46 @@ def _run(args: argparse.Namespace) -> int:
         memory_limit=args.memory_limit,
     )
     _print_results(results)
+    return 0
+
+
+def _print_cnpj(results: list[FileResult]) -> None:
+    for r in results:
+        notes = []
+        if r.marker.get("invalid_dates"):
+            notes.append(f"invalid dates {r.marker['invalid_dates']}")
+        if r.marker.get("invalid_cnpj"):
+            notes.append(f"invalid check digits {r.marker['invalid_cnpj']:,}")
+        if r.marker.get("alphanumeric_cnpj"):
+            notes.append(f"alphanumeric {r.marker['alphanumeric_cnpj']:,}")
+        print(
+            f"{r.table.value:15} {r.chunk}  {r.status:7} {r.rows:>12,} rows  {r.seconds:6.1f}s  "
+            + "  ".join(notes)
+        )
+    written = [r for r in results if r.status == "written"]
+    print(f"{len(written)} written, {len(results) - len(written)} skipped")
+
+
+def _run_cnpj(args: argparse.Namespace) -> int:
+    source = _cnpj_source(args)
+    if args.command == "releases":
+        for release in source.list_releases():
+            print(release)
+        return 0
+    release = source.list_releases()[-1] if args.release == "latest" else Month.parse(args.release)
+    store = open_store(args.dest, endpoint_url=args.endpoint_url)
+    results = ingest_release(
+        source,
+        store,
+        release,
+        tables=args.tables,
+        keep_personal=args.keep_personal,
+        force=args.force,
+        workdir=Path(args.workdir) if args.workdir else None,
+        memory_limit=args.memory_limit,
+    )
+    print(f"release {release}")
+    _print_cnpj(results)
     return 0
 
 

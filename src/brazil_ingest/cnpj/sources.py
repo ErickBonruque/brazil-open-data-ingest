@@ -1,0 +1,201 @@
+"""Where CNPJ releases come from: the public WebDAV share of the Receita, or a local folder.
+
+Since 2025 the Receita publishes the open data on a Nextcloud server. A public share can be read
+without a login through WebDAV: ``PROPFIND`` lists folders and files (with sizes), ``GET`` with a
+``Range`` header downloads and resumes.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Protocol, TypeVar
+from urllib.parse import quote, unquote
+
+from defusedxml import ElementTree
+
+from brazil_ingest.cnpj.layout import LayoutError, parse_zip_name
+from brazil_ingest.months import Month
+
+log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+SHARE_URL = "https://arquivos.receitafederal.gov.br/public.php/dav/files/YggdBLfdninEJX9"
+_DAV = "{DAV:}"
+_PROPFIND_BODY = (
+    b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop>'
+    b"<d:getcontentlength/><d:resourcetype/></d:prop></d:propfind>"
+)
+USER_AGENT = "brazil-open-data-ingest (+https://github.com/ErickBonruque/brazil-open-data-ingest)"
+
+
+class Source(Protocol):
+    def list_releases(self) -> list[Month]: ...
+    def list_files(self, release: Month) -> dict[str, int]: ...
+    def fetch(self, release: Month, name: str, dest_dir: Path) -> Path: ...
+
+
+def _is_cnpj_zip(name: str) -> bool:
+    try:
+        parse_zip_name(name)
+    except LayoutError:
+        return False
+    return True
+
+
+class LocalSource:
+    """Releases in ``<root>/<YYYY-MM>/*.zip`` (the server layout)."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def list_releases(self) -> list[Month]:
+        out = []
+        for child in self.root.iterdir():
+            try:
+                out.append(Month.parse(child.name))
+            except ValueError:
+                continue
+        return sorted(out)
+
+    def list_files(self, release: Month) -> dict[str, int]:
+        folder = self.root / str(release)
+        if not folder.is_dir():
+            return {}
+        return {p.name: p.stat().st_size for p in folder.iterdir() if _is_cnpj_zip(p.name)}
+
+    def fetch(self, release: Month, name: str, dest_dir: Path) -> Path:
+        path = self.root / str(release) / name
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+
+# Returns the response object of ``urllib.request.urlopen`` (a context manager).
+Opener = Callable[[urllib.request.Request, float], Any]
+
+
+class WebDavSource:
+    """The public share of the Receita (or any WebDAV folder with the same layout)."""
+
+    def __init__(
+        self,
+        share_url: str = SHARE_URL,
+        *,
+        timeout: float = 60.0,
+        retries: int = 5,
+        backoff: float = 5.0,
+        opener: Opener | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.share_url = share_url.rstrip("/")
+        self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self._open = opener or (lambda req, timeout: urllib.request.urlopen(req, timeout=timeout))  # noqa: S310
+        self._sleep = sleep
+
+    def _url(self, *parts: str) -> str:
+        return "/".join([self.share_url, *(quote(p) for p in parts)])
+
+    def _retry(self, what: str, action: Callable[[], T]) -> T:
+        for attempt in range(1, self.retries + 1):
+            try:
+                return action()
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500 and exc.code != 429:
+                    raise
+                error: Exception = exc
+            except (urllib.error.URLError, OSError) as exc:
+                error = exc
+            if attempt == self.retries:
+                raise error
+            wait = self.backoff * 2 ** (attempt - 1)
+            log.warning("%s failed (%s); retry %d in %.0fs", what, error, attempt, wait)
+            self._sleep(wait)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _propfind(self, url: str) -> list[tuple[str, int | None, bool]]:
+        """(name, size, is_folder) of the children of a folder."""
+
+        def run() -> bytes:
+            req = urllib.request.Request(  # noqa: S310 - https URL set by the caller
+                url + "/",
+                data=_PROPFIND_BODY,
+                method="PROPFIND",
+                headers={"Depth": "1", "Content-Type": "application/xml", "User-Agent": USER_AGENT},
+            )
+            with self._open(req, self.timeout) as resp:
+                body: bytes = resp.read()
+                return body
+
+        root = ElementTree.fromstring(self._retry(f"list {url}", run))
+        out = []
+        for response in root.iter(f"{_DAV}response"):
+            href = unquote(response.findtext(f"{_DAV}href") or "").rstrip("/")
+            name = href.rsplit("/", 1)[-1]
+            size_text = response.findtext(f".//{_DAV}getcontentlength")
+            is_folder = response.find(f".//{_DAV}collection") is not None
+            out.append((name, int(size_text) if size_text else None, is_folder))
+        return out[1:]  # the first response is the folder itself
+
+    def list_releases(self) -> list[Month]:
+        releases = []
+        for name, _, is_folder in self._propfind(self.share_url):
+            if is_folder:
+                try:
+                    releases.append(Month.parse(name))
+                except ValueError:
+                    continue
+        return sorted(releases)
+
+    def list_files(self, release: Month) -> dict[str, int]:
+        try:
+            entries = self._propfind(self._url(str(release)))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return {}
+            raise
+        return {
+            name: size if size is not None else -1
+            for name, size, is_folder in entries
+            if not is_folder and _is_cnpj_zip(name)
+        }
+
+    def fetch(self, release: Month, name: str, dest_dir: Path) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        final = dest_dir / name
+        part = dest_dir / f"{name}.part"
+        expected = self.list_files(release).get(name)
+        if expected is None:
+            raise FileNotFoundError(f"{release}/{name} is not on the server")
+        url = self._url(str(release), name)
+
+        def run() -> Path:
+            offset = part.stat().st_size if part.exists() else 0
+            if offset > expected:
+                part.unlink()
+                offset = 0
+            headers = {"User-Agent": USER_AGENT}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            req = urllib.request.Request(url, headers=headers)  # noqa: S310
+            with self._open(req, self.timeout) as resp:
+                if offset and resp.status != 206:  # server ignored Range: start again
+                    part.unlink()
+                with part.open("ab") as fh:
+                    while block := resp.read(1 << 20):
+                        fh.write(block)
+            got = part.stat().st_size
+            if got != expected:
+                raise OSError(f"{name}: got {got} bytes, server reports {expected}")
+            part.replace(final)
+            return final
+
+        log.info("download %s", url)
+        return self._retry(f"download {name}", run)
