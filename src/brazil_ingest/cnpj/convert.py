@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
@@ -50,6 +51,28 @@ class ConvertResult:
     invalid_dates: dict[str, int]
     invalid_cnpj: int
     alphanumeric_cnpj: int
+    control_characters: int = 0
+
+
+_C1 = re.compile(rb"[\x80-\x9f]")
+
+
+def latin1_to_utf8(path: Path, *, delete_source: bool = False) -> tuple[Path, int]:
+    """Transcode a Latin-1 file to UTF-8 and count C1 control characters (bytes 0x80-0x9F).
+
+    Every byte is valid Latin-1, but DuckDB's Latin-1 reader refuses the C1 range, and the
+    registry has a few of these bytes (for example one ``0x8F`` inside an email field). As
+    UTF-8 the same characters (U+0080-U+009F) are read without loss.
+    """
+    out = path.with_name(path.name + ".utf8")
+    controls = 0
+    with path.open("rb") as src, out.open("wb") as dst:
+        while block := src.read(1 << 24):
+            controls += len(_C1.findall(block))
+            dst.write(block.decode("latin-1").encode("utf-8"))
+    if delete_source:
+        path.unlink()
+    return out, controls
 
 
 def extract_member(archive: Path, dest_dir: Path, *, max_bytes: int = MAX_UNCOMPRESSED) -> Path:
@@ -137,8 +160,12 @@ def convert(
     *,
     keep_personal: bool = False,
     memory_limit: str | None = None,
+    delete_source: bool = False,
 ) -> ConvertResult:
     encoding = detect_encoding(text_file)
+    controls = 0
+    if encoding == "latin-1":
+        text_file, controls = latin1_to_utf8(text_file, delete_source=delete_source)
     source_names = [c.name for c in COLUMNS[table]]
     columns = output_columns(table, keep_personal=keep_personal)
     select = ",\n    ".join(_expr(c, table, keep_personal) for c in columns)
@@ -152,7 +179,7 @@ def convert(
         con.execute(
             f"CREATE TEMP VIEW src AS SELECT * FROM read_csv({sql_str(str(text_file))}, "
             f"delim=';', quote='\"', escape='\"', header=false, names=[{names_sql}], "
-            f"all_varchar=true, encoding={sql_str(encoding)}, strict_mode=true)"
+            "all_varchar=true, encoding='utf-8', strict_mode=true)"
         )
         con.execute(
             f"COPY (SELECT\n    {select}\nFROM src) TO {sql_str(str(tmp))} "
@@ -163,7 +190,7 @@ def convert(
     if row is None:  # pragma: no cover - COUNT(*) always returns a row
         raise RuntimeError("empty result from DuckDB")
 
-    scan = scan_source(text_file, table, encoding)
+    scan = scan_source(text_file, table, "utf-8")
     rows = int(row[0])
     if rows != scan.rows:
         tmp.unlink(missing_ok=True)
@@ -179,4 +206,5 @@ def convert(
         invalid_dates=invalid_dates,
         invalid_cnpj=scan.invalid_cnpj,
         alphanumeric_cnpj=scan.alphanumeric_cnpj,
+        control_characters=controls,
     )

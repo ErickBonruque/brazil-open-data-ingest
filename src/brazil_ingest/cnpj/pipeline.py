@@ -79,6 +79,7 @@ def ingest_file(
             tmp_dir / "out.parquet",
             keep_personal=keep_personal,
             memory_limit=memory_limit,
+            delete_source=True,
         )
         marker = {
             "dataset": DATASET,
@@ -94,6 +95,7 @@ def ingest_file(
             "invalid_dates": result.invalid_dates,
             "invalid_cnpj": result.invalid_cnpj,
             "alphanumeric_cnpj": result.alphanumeric_cnpj,
+            "control_characters": result.control_characters,
             "columns": result.columns,
         }
         publish(store, prefix, result.parquet, marker)

@@ -173,3 +173,12 @@ def test_extract_member_refuses_a_bomb(tmp_path: Path) -> None:
         extract_member(archive, tmp_path / "x")
     with pytest.raises(LayoutError, match="too big"):
         extract_member(archive, tmp_path / "y", max_bytes=10)
+
+
+def test_c1_control_byte_is_kept_and_counted(tmp_path: Path) -> None:
+    src = tmp_path / "est.csv"
+    row = establishment("00000001", "0001").replace("contato@example.com", "a\x8fb@example.com")
+    src.write_bytes((row + "\n").encode("latin-1"))
+    result = convert(src, Table.ESTABLISHMENTS, tmp_path / "out.parquet", keep_personal=True)
+    assert result.control_characters == 1 and result.encoding == "latin-1"
+    assert query(result.parquet, "SELECT email FROM {t}") == [("a\x8fb@example.com",)]
