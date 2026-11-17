@@ -69,6 +69,8 @@ def ingest_file(
         return FileResult(table, chunk, "skipped", int(marker["rows"]), 0.0, marker)
 
     started = time.perf_counter()
+    if workdir is not None:
+        workdir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cnpj-", dir=workdir) as tmp:
         tmp_dir = Path(tmp)
         archive = source.fetch(release, name, tmp_dir / "download")

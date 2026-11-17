@@ -90,6 +90,17 @@ def test_ingest_release_and_skip(release_dir: Path, tmp_path: Path) -> None:
     assert names == [("00000001", "ACME LTDA"), ("00000002", None)]
 
 
+def test_workdir_is_created(release_dir: Path, tmp_path: Path) -> None:
+    workdir = tmp_path / "not" / "yet"
+    store = LocalStore(tmp_path / "out")
+
+    ingest_release(
+        LocalSource(release_dir), store, Month(2026, 10), tables=[Table.CNAES], workdir=workdir
+    )
+
+    assert workdir.is_dir()
+
+
 def test_missing_release(release_dir: Path, tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         ingest_release(LocalSource(release_dir), LocalStore(tmp_path), Month(2026, 9))

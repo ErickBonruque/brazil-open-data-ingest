@@ -81,6 +81,8 @@ def ingest_file(
             )
         return PartitionResult(kind, month, "skipped", marker["rows"], marker["balance"], 0.0)
 
+    if workdir is not None:
+        workdir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="caged-", dir=workdir) as tmp:
         tmp_dir = Path(tmp)
         archive = source.fetch(month, name, tmp_dir / "download")
